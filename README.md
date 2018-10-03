@@ -12,5 +12,5 @@ Note: This is a work in progress.
 [https://github.com/grafov/m3u8](https://github.com/grafov/m3u8)
 
 #### Inspired by:
-[https://github.com/kz26/gohls](https://github.com/kz26/gohls)
+[https://github.com/kz26/gohls](https://github.com/kz26/gohls)  
 [https://github.com/somombo/hlsdownloader](https://github.com/somombo/hlsdownloader)
