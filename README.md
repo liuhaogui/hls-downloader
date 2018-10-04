@@ -1,9 +1,14 @@
 ### [WIP] HLS Downloader
-Tool written in Go to download HLS streams given its manifest url (m3u8)
+Tool written in Go to download HLS streams given its manifest url (m3u8). Streams can be stored in a local folder or delivered to an S3 bucket
 
 ### Usage
+Local folder:
 ```
 hls-downloader https://example.com/hls/master.m3u8 /path/to/storage
+```
+S3 folder:
+```
+hls-downloader https://example.com/hls/master.m3u8 s3://<bucket>/<path>
 ```
 
 Note: This is a work in progress.

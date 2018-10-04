@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,62 +17,11 @@ import (
 	"github.com/grafov/m3u8"
 )
 
-type fileSystem interface {
-	Write(content []byte, fileName string) (string, error)
-	WriteFrom(stream io.Reader, fileName string) (string, error)
-}
+// FTP protocol
+const FTP = "ftp"
 
-type localFS struct {
-	localDir string
-}
-
-type S3FS struct {
-	config map[string]string
-}
-
-func (fs *localFS) WriteFrom(stream io.Reader, fileName string) (string, error) {
-	if len(fs.localDir) == 0 {
-		return "", errors.New("local directory is not defined")
-	}
-
-	out, err := os.Create(path.Join(fs.localDir, fileName))
-
-	if err != nil {
-		return "", fmt.Errorf("could not create local file: %v", err)
-	}
-
-	defer out.Close()
-
-	_, err = io.Copy(out, stream)
-
-	if err != nil {
-		return "", fmt.Errorf("could not write stream to local file: %v", err)
-	}
-
-	return out.Name(), nil
-}
-
-func (fs *localFS) Write(content []byte, fileName string) (string, error) {
-	if len(fs.localDir) == 0 {
-		return "", errors.New("local directory is not defined")
-	}
-
-	out, err := os.Create(path.Join(fs.localDir, fileName))
-
-	if err != nil {
-		return "", fmt.Errorf("could not create local file: %v", err)
-	}
-
-	defer out.Close()
-
-	_, err = out.Write(content)
-
-	if err != nil {
-		return "", fmt.Errorf("could not write content to local file: %v", err)
-	}
-
-	return out.Name(), nil
-}
+// S3 protocol
+const S3 = "s3"
 
 func fetch(url string) (io.ReadCloser, error) {
 	log.Printf("Getting %s \n", url)
@@ -190,7 +138,8 @@ func downloadPlaylist(u string, fs fileSystem) (bool, error) {
 
 func main() {
 	input := flag.String("i", "", "Manifest (m3u8) url to download")
-	output := flag.String("o", "", "Path or URI where the files will be stored")
+	output := flag.String("o", "", "Path or URI where the files will be stored (local path or S3 bucket in the format s3://<bucket>/<path>")
+
 	flag.Parse()
 
 	if len(*input) == 0 {
@@ -207,12 +156,44 @@ func main() {
 		}
 
 		*output = filepath.Dir(ex)
-
-		log.Printf("Using output dir as %s\n", *output)
 	}
 
-	// TODO: Allow S3 FS
-	fs := &localFS{*output}
+	var fs fileSystem
+	var err error
+	delimiter := strings.Index(*output, "://")
+
+	if delimiter > -1 {
+		protocol := (*output)[0:delimiter]
+
+		switch protocol {
+		case S3:
+			uriParts := strings.Split((*output)[delimiter+3:], "/")
+			path := ""
+			bucket := uriParts[0]
+
+			if len(uriParts) > 1 {
+				path = strings.Join(uriParts[1:], "/")
+			}
+
+			log.Printf("Using output as S3 bucket %s, path %s", bucket, path)
+
+			fs, err = NewS3FS(bucket, path)
+
+			if err != nil {
+				log.Fatal(err)
+			}
+		default:
+			log.Fatalf("Protocol not supported: %s", protocol)
+		}
+	} else {
+		if _, err = os.Stat(*output); err != nil {
+			log.Fatalf("Output dir does not exists %s", *output)
+		}
+
+		log.Printf("Using output as local dir %s\n", *output)
+
+		fs = &localFS{*output}
+	}
 
 	// TODO: Add the gophers fun (use concurrency)
 	_, err = downloadPlaylist(*input, fs)
