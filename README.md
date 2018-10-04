@@ -4,11 +4,11 @@ Tool written in Go to download HLS streams given its manifest url (m3u8). Stream
 ### Usage
 Using local folder as output:
 ```
-hls-downloader https://example.com/hls/master.m3u8 /path/to/storage
+hls-downloader -i https://example.com/hls/master.m3u8 -o /path/to/storage
 ```
 Using S3 bucket as output:
 ```
-hls-downloader https://example.com/hls/master.m3u8 s3://<bucket>/<path>
+hls-downloader -i https://example.com/hls/master.m3u8 -o s3://<bucket>/<path>
 ```
 
 Note: This is a work in progress.
