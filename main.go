@@ -98,7 +98,7 @@ func fetch(url string) (io.ReadCloser, error) {
 	return res.Body, nil
 }
 
-func downloadPlaylist(u string, fs fileSystem) error {
+func downloadPlaylist(u string, fs fileSystem) (bool, error) {
 	playlistURL, err := url.Parse(u)
 
 	if err != nil {
@@ -108,7 +108,7 @@ func downloadPlaylist(u string, fs fileSystem) error {
 	playlistBody, err := fetch(playlistURL.String())
 
 	if err != nil {
-		log.Fatal(err)
+		return false, fmt.Errorf("could not fetch playlist: %v", err)
 	}
 
 	content, err := ioutil.ReadAll(playlistBody)
@@ -116,7 +116,7 @@ func downloadPlaylist(u string, fs fileSystem) error {
 	playlistBody.Close()
 
 	if err != nil {
-		return fmt.Errorf("could not read all content: %v", err)
+		return false, fmt.Errorf("could not read all content: %v", err)
 	}
 
 	playlist, listType, err := m3u8.Decode(*bytes.NewBuffer(content), true)
@@ -130,7 +130,11 @@ func downloadPlaylist(u string, fs fileSystem) error {
 		mediapl := playlist.(*m3u8.MediaPlaylist)
 
 		fileName := path.Base(playlistURL.Path)
-		fs.Write(content, fileName)
+		_, err := fs.Write(content, fileName)
+
+		if err != nil {
+			return false, fmt.Errorf("could not write sub playlist %s %v", fileName, err)
+		}
 
 		var segmentUrl string
 
@@ -141,20 +145,28 @@ func downloadPlaylist(u string, fs fileSystem) error {
 				segmentBody, err := fetch(segmentUrl)
 
 				if err != nil {
-					return fmt.Errorf("could not download segment %d- %s: %v", k, segmentUrl, err)
+					return false, fmt.Errorf("could not download segment %d - %s: %v", k, segmentUrl, err)
 				}
 
 				fileName = path.Base(segment.URI)
-				fs.WriteFrom(segmentBody, fileName)
+				_, err = fs.WriteFrom(segmentBody, fileName)
 
 				segmentBody.Close()
+
+				if err != nil {
+					return false, fmt.Errorf("could not write segment %d - %s: %v", k, segmentUrl, err)
+				}
 			}
 		}
 	case m3u8.MASTER:
 		masterpl := playlist.(*m3u8.MasterPlaylist)
 
 		fileName := path.Base(playlistURL.Path)
-		fs.Write(content, fileName)
+		_, err := fs.Write(content, fileName)
+
+		if err != nil {
+			return false, fmt.Errorf("could not write master playlist %s %v", fileName, err)
+		}
 
 		var subPlaylistUrl string
 
@@ -163,18 +175,28 @@ func downloadPlaylist(u string, fs fileSystem) error {
 				subPlaylistUrl = strings.Replace(playlistURL.String(), fileName, variant.URI, -1)
 
 				log.Printf("Downloading sub playlist %d- %s\n", k, variant.URI)
-				downloadPlaylist(subPlaylistUrl, fs)
+
+				_, err := downloadPlaylist(subPlaylistUrl, fs)
+
+				if err != nil {
+					return false, err
+				}
 			}
 		}
 	}
 
-	return nil
+	return false, nil
 }
 
 func main() {
 	input := flag.String("i", "", "Manifest (m3u8) url to download")
 	output := flag.String("o", "", "Path or URI where the files will be stored")
 	flag.Parse()
+
+	if len(*input) == 0 {
+		flag.Usage()
+		log.Fatal("ERROR: input (-i) must be defined")
+	}
 
 	// Use current directory if none provided
 	if len(*output) == 0 {
@@ -193,7 +215,11 @@ func main() {
 	fs := &localFS{*output}
 
 	// TODO: Add the gophers fun (use concurrency)
-	downloadPlaylist(*input, fs)
+	_, err = downloadPlaylist(*input, fs)
+
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	log.Printf("Successfuly downloaded %s \n", *input)
 }
