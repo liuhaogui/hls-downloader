@@ -24,6 +24,13 @@ const FTP = "ftp"
 // S3 protocol
 const S3 = "s3"
 
+var (
+	// Version is the current version of the tool, added on build time
+	Version string
+	// Build is the date of the build, added on build time
+	Build string
+)
+
 func fetch(url string) (io.ReadCloser, error) {
 	log.Printf("Getting %s \n", url)
 
