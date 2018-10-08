@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 )
 
+// S3FS is S3 file system
 type S3FS struct {
 	session *session.Session
 	bucket  string
