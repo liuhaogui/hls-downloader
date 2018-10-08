@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/grafov/m3u8"
 )
@@ -46,17 +47,37 @@ func fetch(url string) (io.ReadCloser, error) {
 	return res.Body, nil
 }
 
-func downloadPlaylist(u string, fs fileSystem) (bool, error) {
+func download(url string, fs fileSystem) (string, error) {
+
+	body, err := fetch(url)
+
+	if err != nil {
+		return "", fmt.Errorf("could not download segment %s: %v", url, err)
+	}
+
+	defer body.Close()
+
+	fileName := path.Base(url)
+	out, err := fs.WriteFrom(body, fileName)
+
+	if err != nil {
+		return "", fmt.Errorf("could not write segment %s: %v", url, err)
+	}
+
+	return out, nil
+}
+
+func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped chan bool) error {
 	playlistURL, err := url.Parse(u)
 
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("url is not valid: %v", err)
 	}
 
 	playlistBody, err := fetch(playlistURL.String())
 
 	if err != nil {
-		return false, fmt.Errorf("could not fetch playlist: %v", err)
+		return fmt.Errorf("could not fetch playlist: %v", err)
 	}
 
 	content, err := ioutil.ReadAll(playlistBody)
@@ -64,13 +85,13 @@ func downloadPlaylist(u string, fs fileSystem) (bool, error) {
 	playlistBody.Close()
 
 	if err != nil {
-		return false, fmt.Errorf("could not read all content: %v", err)
+		return fmt.Errorf("could not read all content: %v", err)
 	}
 
 	playlist, listType, err := m3u8.Decode(*bytes.NewBuffer(content), true)
 
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("could not parse m3u8 playlist: %v", err)
 	}
 
 	switch listType {
@@ -81,31 +102,23 @@ func downloadPlaylist(u string, fs fileSystem) (bool, error) {
 		_, err := fs.Write(content, fileName)
 
 		if err != nil {
-			return false, fmt.Errorf("could not write sub playlist %s %v", fileName, err)
+			return fmt.Errorf("could not write playlist %s %v", fileName, err)
 		}
 
-		var segmentUrl string
+		log.Printf("Downloaded playlist %s\n", fileName)
 
-		for k, segment := range mediapl.Segments {
+		for _, segment := range mediapl.Segments {
+			select {
+			case <-stopped:
+				return nil
+			default:
+			}
+
 			if segment != nil {
-				segmentUrl = strings.Replace(playlistURL.String(), fileName, segment.URI, -1)
-
-				segmentBody, err := fetch(segmentUrl)
-
-				if err != nil {
-					return false, fmt.Errorf("could not download segment %d - %s: %v", k, segmentUrl, err)
-				}
-
-				fileName = path.Base(segment.URI)
-				_, err = fs.WriteFrom(segmentBody, fileName)
-
-				segmentBody.Close()
-
-				if err != nil {
-					return false, fmt.Errorf("could not write segment %d - %s: %v", k, segmentUrl, err)
-				}
+				downloader <- strings.Replace(playlistURL.String(), fileName, segment.URI, -1)
 			}
 		}
+
 	case m3u8.MASTER:
 		masterpl := playlist.(*m3u8.MasterPlaylist)
 
@@ -113,32 +126,92 @@ func downloadPlaylist(u string, fs fileSystem) (bool, error) {
 		_, err := fs.Write(content, fileName)
 
 		if err != nil {
-			return false, fmt.Errorf("could not write master playlist %s %v", fileName, err)
+			return fmt.Errorf("could not write master playlist %s %v", fileName, err)
 		}
 
-		var subPlaylistUrl string
+		log.Printf("Downloaded master %s\n", fileName)
 
-		for k, variant := range masterpl.Variants {
+		var subPlaylistURL string
+
+		for _, variant := range masterpl.Variants {
 			if variant != nil {
-				subPlaylistUrl = strings.Replace(playlistURL.String(), fileName, variant.URI, -1)
+				subPlaylistURL = strings.Replace(playlistURL.String(), fileName, variant.URI, -1)
 
-				log.Printf("Downloading sub playlist %d- %s\n", k, variant.URI)
-
-				_, err := downloadPlaylist(subPlaylistUrl, fs)
+				err := downloadPlaylist(subPlaylistURL, fs, downloader, stopped)
 
 				if err != nil {
-					return false, err
+					return err
 				}
 			}
 		}
 	}
 
-	return false, nil
+	return nil
+}
+
+func downloadStream(u string, fs fileSystem, workers int) error {
+
+	// Channel to signal successfuly completion
+	done := make(chan bool)
+	// Channel to signal interruption
+	stopped := make(chan bool)
+	// Channel to send errors
+	errors := make(chan error)
+
+	// To know when all workers finished
+	// so all work is processed
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	downloader := make(chan string)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for url := range downloader {
+				out, err := download(url, fs)
+
+				select {
+				case <-stopped:
+					return // Error somewhere, terminate
+				default: // Default is must to avoid blocking
+				}
+
+				if err != nil {
+					errors <- err
+					return
+				}
+
+				log.Printf("Downloaded: %s", out)
+			}
+		}()
+	}
+
+	downloadPlaylist(u, fs, downloader, stopped)
+	close(downloader)
+
+	for {
+		select {
+		case <-done:
+			close(stopped)
+			return nil
+		case err := <-errors:
+			// cancel() may be called multiple times
+			close(stopped)
+			return err
+		}
+	}
 }
 
 func main() {
 	input := flag.String("i", "", "Manifest (m3u8) url to download")
 	output := flag.String("o", "", "Path or URI where the files will be stored (local path or S3 bucket in the format s3://<bucket>/<path>")
+	workers := flag.Int("w", 3, "Number of workers to execute concurrent operations. Default 3, Min 1, Max 10")
 
 	flag.Parse()
 
@@ -195,8 +268,15 @@ func main() {
 		fs = &localFS{*output}
 	}
 
-	// TODO: Add the gophers fun (use concurrency)
-	_, err = downloadPlaylist(*input, fs)
+	if *workers < 1 {
+		*workers = 1
+	}
+
+	if *workers > 10 {
+		*workers = 10
+	}
+
+	err = downloadStream(*input, fs, *workers)
 
 	if err != nil {
 		log.Fatal(err)
