@@ -11,7 +11,16 @@ Using S3 bucket as output:
 hls-downloader -i https://example.com/hls/master.m3u8 -o s3://<bucket>/<path>
 ```
 
+### Options
+`-i`      Manifest (m3u8) url to download  
+`-o`      Path or URI where the files will be stored (local path or S3 bucket in the format `s3://<bucket>/<path>`  
+`-w`      Number of workers to execute concurrent operations. Default: `3`, Min: `1`, Max: `10`
+
 Note: This is a work in progress.
+
+### TODO
+
+Implement FTP delivery (as FileSystem provider)
 
 #### Based on:
 [https://github.com/grafov/m3u8](https://github.com/grafov/m3u8)
