@@ -216,9 +216,11 @@ func downloadStream(u string, fs fileSystem, workers int) error {
 }
 
 func main() {
+	fmt.Printf("HLS Downloader. Version: %s (%s)\n", Version, Build)
+
 	input := flag.String("i", "", "Manifest (m3u8) url to download")
 	output := flag.String("o", "", "Path or URI where the files will be stored (local path or S3 bucket in the format s3://<bucket>/<path>")
-	workers := flag.Int("w", 3, "Number of workers to execute concurrent operations. Default 3, Min 1, Max 10")
+	workers := flag.Int("w", 3, "Number of workers to execute concurrent operations. Min: 1, Max: 10")
 
 	flag.Parse()
 
