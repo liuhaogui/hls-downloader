@@ -144,8 +144,15 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 	case m3u8.MASTER:
 		masterpl := playlist.(*m3u8.MasterPlaylist)
 
+		// Trim possible absolute url to each sub playlist
+		// to make the stream playable from new location
+		for _, variant := range masterpl.Variants {
+			variant.URI = path.Base(variant.URI)
+		}
+
 		fileName := path.Base(playlistURL.Path)
-		_, err := fs.Write(content, fileName)
+
+		_, err := fs.Write([]byte(masterpl.String()), fileName)
 
 		if err != nil {
 			errors <- fmt.Errorf("could not write master playlist %s %v", fileName, err)
