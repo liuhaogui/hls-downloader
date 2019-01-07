@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/grafov/m3u8"
 )
@@ -23,6 +24,11 @@ const FTP = "ftp"
 
 // S3 protocol
 const S3 = "s3"
+
+type downloadInfo struct {
+	url      string
+	destPath string
+}
 
 var (
 	// Version is the current version of the tool, added on build time
@@ -54,7 +60,11 @@ func fetch(url string) (io.ReadCloser, error) {
 	return res.Body, nil
 }
 
-func download(url string, fs fileSystem) (string, error) {
+func download(url, destPath string, fs fileSystem) (string, error) {
+
+	if url == "" || destPath == "" {
+		return "", fmt.Errorf("arguments cannot be empty")
+	}
 
 	body, err := fetch(url)
 
@@ -64,8 +74,7 @@ func download(url string, fs fileSystem) (string, error) {
 
 	defer body.Close()
 
-	fileName := path.Base(url)
-	out, err := fs.WriteFrom(body, fileName)
+	out, err := fs.WriteFrom(body, destPath)
 
 	if err != nil {
 		return "", fmt.Errorf("could not write segment %s: %v", url, err)
@@ -74,7 +83,7 @@ func download(url string, fs fileSystem) (string, error) {
 	return out, nil
 }
 
-func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped chan bool, errors chan error) {
+func downloadPlaylist(u string, fs fileSystem, downloader chan downloadInfo, stopped chan bool, errors chan error) {
 	playlistURL, err := url.Parse(u)
 
 	if err != nil {
@@ -112,7 +121,19 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 		mediapl := playlist.(*m3u8.MediaPlaylist)
 
 		fileName := path.Base(playlistURL.Path)
-		_, err := fs.Write(content, fileName)
+		urlPrefix := strings.TrimSuffix(playlistURL.String(), fileName)
+
+		var segment *m3u8.MediaSegment
+
+		// Trim possible absolute url to each segment
+		// to make the stream playable from new location
+		for _, segment = range mediapl.Segments {
+			if segment != nil {
+				segment.URI = strings.TrimPrefix(segment.URI, urlPrefix)
+			}
+		}
+
+		_, err := fs.Write([]byte(mediapl.String()), fileName)
 
 		if err != nil {
 			errors <- fmt.Errorf("could not write playlist %s %v", fileName, err)
@@ -121,7 +142,7 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 
 		log.Printf("Downloaded playlist %s\n", fileName)
 
-		for _, segment := range mediapl.Segments {
+		for _, segment = range mediapl.Segments {
 			select {
 			case <-stopped:
 				return
@@ -129,15 +150,18 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 			}
 
 			if segment != nil {
-				var segmentURL string
+				info := downloadInfo{}
 				_, err = url.ParseRequestURI(segment.URI)
+
 				if err != nil {
-					segmentURL = strings.Replace(playlistURL.String(), fileName, segment.URI, -1)
+					info.url = strings.Replace(playlistURL.String(), fileName, segment.URI, -1)
+					info.destPath = segment.URI
 				} else {
-					segmentURL = segment.URI
+					info.url = segment.URI
+					info.destPath = path.Base(segment.URI)
 				}
 
-				downloader <- segmentURL
+				downloader <- info
 			}
 		}
 
@@ -174,6 +198,9 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 			}
 
 			if variant != nil {
+				// As for now this won't be an url never
+				// since we are trimming it above
+				// TODO: make trimming URI optional or just remove url check
 				_, err = url.ParseRequestURI(variant.URI)
 				if err != nil {
 					subPlaylistURL = strings.Replace(playlistURL.String(), fileName, variant.URI, -1)
@@ -222,13 +249,23 @@ func downloadStream(u string, fs fileSystem, workers int) error {
 		close(done)
 	}()
 
-	downloader := make(chan string)
+	downloader := make(chan downloadInfo)
+
+	var count uint64
+	var total uint64
 
 	for i := 0; i < workers; i++ {
 		go func() {
 			defer wg.Done()
-			for url := range downloader {
-				out, err := download(url, fs)
+			for info := range downloader {
+				out, err := download(info.url, info.destPath, fs)
+
+				if err != nil {
+					errors <- err
+					return
+				}
+
+				atomic.AddUint64(&count, 1)
 
 				select {
 				case <-stopped:
@@ -236,12 +273,9 @@ func downloadStream(u string, fs fileSystem, workers int) error {
 				default: // Default is must to avoid blocking
 				}
 
-				if err != nil {
-					errors <- err
-					return
-				}
+				total = count // TODO: find actual total
 
-				log.Printf("Downloaded: %s", out)
+				log.Printf("%s (%d / %d)", out, count, total)
 			}
 		}()
 	}

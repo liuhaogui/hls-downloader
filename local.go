@@ -17,7 +17,19 @@ func (fs *localFS) WriteFrom(stream io.Reader, fileName string) (string, error) 
 		return "", errors.New("local directory is not defined")
 	}
 
-	out, err := os.Create(path.Join(fs.localDir, fileName))
+	fullPath := path.Join(fs.localDir, fileName)
+	path := path.Dir(fullPath)
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Println("Creating path " + path)
+		err := os.MkdirAll(path, os.ModePerm)
+
+		if err != nil {
+			return "", fmt.Errorf("path to file could not be created: %v", err)
+		}
+	}
+
+	out, err := os.Create(fullPath)
 
 	if err != nil {
 		return "", fmt.Errorf("could not create local file: %v", err)
@@ -39,7 +51,20 @@ func (fs *localFS) Write(content []byte, fileName string) (string, error) {
 		return "", errors.New("local directory is not defined")
 	}
 
-	out, err := os.Create(path.Join(fs.localDir, fileName))
+	// fileName could contain parent folders
+	fullPath := path.Join(fs.localDir, fileName)
+	path := path.Dir(fullPath)
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Println("Creating path " + path)
+		err := os.MkdirAll(path, os.ModePerm)
+
+		if err != nil {
+			return "", fmt.Errorf("path to file could not be created: %v", err)
+		}
+	}
+
+	out, err := os.Create(fullPath)
 
 	if err != nil {
 		return "", fmt.Errorf("could not create local file: %v", err)
