@@ -122,7 +122,15 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 			}
 
 			if segment != nil {
-				downloader <- strings.Replace(playlistURL.String(), fileName, segment.URI, -1)
+				var segmentURL string
+				_, err = url.ParseRequestURI(segment.URI)
+				if err != nil {
+					segmentURL = strings.Replace(playlistURL.String(), fileName, segment.URI, -1)
+				} else {
+					segmentURL = segment.URI
+				}
+
+				downloader <- segmentURL
 			}
 		}
 
@@ -142,7 +150,12 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 
 		for _, variant := range masterpl.Variants {
 			if variant != nil {
-				subPlaylistURL = strings.Replace(playlistURL.String(), fileName, variant.URI, -1)
+				_, err = url.ParseRequestURI(variant.URI)
+				if err != nil {
+					subPlaylistURL = strings.Replace(playlistURL.String(), fileName, variant.URI, -1)
+				} else {
+					subPlaylistURL = variant.URI
+				}
 
 				err := downloadPlaylist(subPlaylistURL, fs, downloader, stopped)
 
