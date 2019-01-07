@@ -74,17 +74,19 @@ func download(url string, fs fileSystem) (string, error) {
 	return out, nil
 }
 
-func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped chan bool) error {
+func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped chan bool, errors chan error) {
 	playlistURL, err := url.Parse(u)
 
 	if err != nil {
-		return fmt.Errorf("url is not valid: %v", err)
+		errors <- fmt.Errorf("url is not valid: %v", err)
+		return
 	}
 
 	playlistBody, err := fetch(playlistURL.String())
 
 	if err != nil {
-		return fmt.Errorf("could not fetch playlist: %v", err)
+		errors <- fmt.Errorf("could not fetch playlist: %v", err)
+		return
 	}
 
 	content, err := ioutil.ReadAll(playlistBody)
@@ -92,14 +94,18 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 	playlistBody.Close()
 
 	if err != nil {
-		return fmt.Errorf("could not read all content: %v", err)
+		errors <- fmt.Errorf("could not read all content: %v", err)
+		return
 	}
 
 	playlist, listType, err := m3u8.Decode(*bytes.NewBuffer(content), true)
 
 	if err != nil {
-		return fmt.Errorf("could not parse m3u8 playlist: %v", err)
+		errors <- fmt.Errorf("could not parse m3u8 playlist: %v", err)
+		return
 	}
+
+	process := make(chan bool)
 
 	switch listType {
 	case m3u8.MEDIA:
@@ -109,7 +115,8 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 		_, err := fs.Write(content, fileName)
 
 		if err != nil {
-			return fmt.Errorf("could not write playlist %s %v", fileName, err)
+			errors <- fmt.Errorf("could not write playlist %s %v", fileName, err)
+			return
 		}
 
 		log.Printf("Downloaded playlist %s\n", fileName)
@@ -117,7 +124,7 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 		for _, segment := range mediapl.Segments {
 			select {
 			case <-stopped:
-				return nil
+				return
 			default:
 			}
 
@@ -141,14 +148,24 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 		_, err := fs.Write(content, fileName)
 
 		if err != nil {
-			return fmt.Errorf("could not write master playlist %s %v", fileName, err)
+			errors <- fmt.Errorf("could not write master playlist %s %v", fileName, err)
+			return
 		}
 
 		log.Printf("Downloaded master %s\n", fileName)
 
 		var subPlaylistURL string
+		length := len(masterpl.Variants)
+
+		log.Printf("%d sub-playlists found", length)
 
 		for _, variant := range masterpl.Variants {
+			select {
+			case <-stopped:
+				return
+			default:
+			}
+
 			if variant != nil {
 				_, err = url.ParseRequestURI(variant.URI)
 				if err != nil {
@@ -157,16 +174,26 @@ func downloadPlaylist(u string, fs fileSystem, downloader chan string, stopped c
 					subPlaylistURL = variant.URI
 				}
 
-				err := downloadPlaylist(subPlaylistURL, fs, downloader, stopped)
-
-				if err != nil {
-					return err
-				}
+				// Closures in Go are lexically scoped.
+				// ... any variables referenced within the closure from the "outer" scope
+				// are not a copy but are in fact a reference
+				go func(subPlaylistURL string) {
+					defer func() {
+						process <- true
+					}()
+					log.Printf("Downloading sub playlist %s", subPlaylistURL)
+					downloadPlaylist(subPlaylistURL, fs, downloader, stopped, errors)
+				}(subPlaylistURL)
+			} else {
+				process <- true
 			}
 		}
-	}
 
-	return nil
+		for i := 1; i <= length; i++ {
+			<-process
+			log.Printf("Subplaylist processing finished")
+		}
+	}
 }
 
 func downloadStream(u string, fs fileSystem, workers int) error {
@@ -212,7 +239,7 @@ func downloadStream(u string, fs fileSystem, workers int) error {
 		}()
 	}
 
-	downloadPlaylist(u, fs, downloader, stopped)
+	downloadPlaylist(u, fs, downloader, stopped, errors)
 	close(downloader)
 
 	for {
