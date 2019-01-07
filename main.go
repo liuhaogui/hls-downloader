@@ -246,8 +246,10 @@ func downloadStream(u string, fs fileSystem, workers int) error {
 		}()
 	}
 
-	downloadPlaylist(u, fs, downloader, stopped, errors)
-	close(downloader)
+	go func() {
+		downloadPlaylist(u, fs, downloader, stopped, errors)
+		close(downloader)
+	}()
 
 	for {
 		select {
